@@ -1,0 +1,15 @@
+:root.light {
+  --bg-app: #f4f7fb;
+  --bg-card: rgba(255, 255, 255, 0.8);
+  --bg-input: rgba(0, 0, 0, 0.03);
+  --text-main: #0f172a;
+  --text-muted: #64748b;
+  --border-color: rgba(0, 0, 0, 0.05);
+  --primary: #3b82f6;
+  --primary-rgb: 59, 130, 246;
+  --primary-foreground: #ffffff;
+  --card-shadow: 0 10px 40px -10px rgba(0, 0, 0, 0.05);
+  --accent-emerald: #059669;
+  --accent-rose: #e11d48;
+  --card-radius: 2rem;
+}

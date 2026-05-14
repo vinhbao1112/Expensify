@@ -1,0 +1,15 @@
+.dark {
+  --bg-app: #030305;
+  --bg-card: rgba(13, 13, 18, 0.75);
+  --bg-input: rgba(255, 255, 255, 0.04);
+  --text-main: #f1f5f9;
+  --text-muted: #94a3b8;
+  --border-color: rgba(255, 255, 255, 0.06);
+  --primary: #3b82f6;
+  --primary-rgb: 59, 130, 246;
+  --primary-foreground: #ffffff;
+  --card-shadow: 0 25px 80px -20px rgba(0, 0, 0, 0.9);
+  --accent-emerald: #10b981;
+  --accent-rose: #f43f5e;
+  --card-radius: 2rem;
+}

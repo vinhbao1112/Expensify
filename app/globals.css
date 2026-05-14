@@ -1,0 +1,84 @@
+@import "tailwindcss";
+
+@import "./theme-light.css";
+@import "./theme-dark.css";
+
+@layer base {
+  body {
+    background-color: var(--bg-app);
+    color: var(--text-main);
+    transition: background-color 0.3s ease, color 0.3s ease;
+    font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+}
+
+/* Các lớp hỗ trợ CSS thuần cho Glassmorphism */
+.glass-effect {
+  background-color: var(--bg-card);
+  border: 1px solid var(--border-color);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+}
+
+/* --- Premium Animations --- */
+
+/* 1. Hiệu ứng trôi nổi (Floating) */
+@keyframes float {
+  0%, 100% { transform: translateY(0px) rotate(0deg); }
+  50% { transform: translateY(-20px) rotate(2deg); }
+}
+
+.animate-float {
+  animation: float 6s ease-in-out infinite;
+}
+
+/* 2. Hiệu ứng hào quang (Glow) */
+@keyframes glow {
+  0%, 100% { box-shadow: 0 0 20px rgba(var(--primary-rgb), 0.2); }
+  50% { box-shadow: 0 0 40px rgba(var(--primary-rgb), 0.4); }
+}
+
+.animate-glow {
+  animation: glow 4s ease-in-out infinite;
+}
+
+@keyframes meshMove {
+  0% { transform: translate(0, 0) scale(1) rotate(0deg); }
+  33% { transform: translate(10%, -10%) scale(1.2) rotate(120deg); }
+  66% { transform: translate(-5%, 5%) scale(0.8) rotate(240deg); }
+  100% { transform: translate(0, 0) scale(1) rotate(360deg); }
+}
+
+.mesh-orb {
+  position: fixed;
+  border-radius: 50%;
+  filter: blur(120px);
+  z-index: 0;
+  opacity: 0.6;
+  pointer-events: none;
+  animation: meshMove 20s ease-in-out infinite;
+}
+
+/* 5. Chữ Gradient chạy qua lại */
+@keyframes gradientText {
+  0% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
+
+.animate-gradient-text {
+  animation: gradientText 6s ease infinite;
+}
+
+/* 4. Hiệu ứng lưới Glassmorphism */
+.glass-grid {
+  position: fixed;
+  inset: 0;
+  background-image: radial-gradient(var(--border-color) 1px, transparent 1px);
+  background-size: 40px 40px;
+  mask-image: radial-gradient(ellipse at center, black, transparent 80%);
+  z-index: 0;
+  pointer-events: none;
+  opacity: 0.3;
+}
