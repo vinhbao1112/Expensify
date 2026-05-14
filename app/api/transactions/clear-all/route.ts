@@ -4,7 +4,7 @@ import { GoogleSheetsService } from "@/lib/google-sheets"
 import { authOptions } from "@/lib/auth"
 
 export async function POST(request: Request) {
-  const session = await getServerSession(authOptions)
+  const session = (await getServerSession(authOptions)) as any
   if (!session?.accessToken) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
   }
