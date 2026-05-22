@@ -77,11 +77,11 @@ export function InstallPWA() {
           }}
           exit={{ opacity: 0, scale: 0.8 }}
           onClick={handleInstallClick}
-          className="group relative flex items-center gap-2 px-4 py-2 rounded-xl bg-blue-600 text-white border border-blue-500 shadow-lg shadow-blue-500/25 hover:bg-blue-700 transition-all duration-300"
+          className="group relative flex items-center gap-1.5 sm:gap-2 px-2.5 sm:px-4 py-2 rounded-xl bg-blue-600 text-white border border-blue-500 shadow-lg shadow-blue-500/25 hover:bg-blue-700 transition-all duration-300"
           title={isIOS ? "Cách cài đặt trên iOS" : "Cài đặt ứng dụng"}
         >
           {isIOS ? <Share className="w-4 h-4" /> : <Download className="w-4 h-4" />}
-          <span className="text-[10px] font-black uppercase tracking-wider">
+          <span className="hidden sm:inline text-[10px] font-black uppercase tracking-wider">
             {isIOS ? "Cài đặt" : "Cài đặt App"}
           </span>
 
