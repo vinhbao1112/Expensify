@@ -64,8 +64,9 @@ export function Dashboard() {
   const [editingTransaction, setEditingTransaction] =
     useState<Transaction | null>(null);
   const [showExportMenu, setShowExportMenu] = useState(false);
-  const [statsMode, setStatsMode] = useState<"month" | "all">("month");
-  const [balanceMode, setBalanceMode] = useState<"month" | "all">("all");
+  const [statsMode, setStatsMode] = useState<"day" | "month" | "all">("month");
+  const [balanceMode, setBalanceMode] = useState<"day" | "month" | "all">("all");
+  const [todayStr, setTodayStr] = useState("");
   const [allTimeTotals, setAllTimeTotals] = useState({ income: 0, expense: 0 });
   const [loadingAllTime, setLoadingAllTime] = useState(false);
   const [activeTab, setActiveTab] = useState<"overview" | "history">(
@@ -77,6 +78,10 @@ export function Dashboard() {
   useEffect(() => {
     spreadsheetIdRef.current = spreadsheetId;
   }, [spreadsheetId]);
+
+  useEffect(() => {
+    setTodayStr(new Date().toLocaleDateString("sv-SE"));
+  }, []);
 
   const loadData = useCallback(
     async (targetId?: string) => {
@@ -236,6 +241,21 @@ export function Dashboard() {
     { income: 0, expense: 0 },
   );
 
+  const dailyTotals = transactions.reduce(
+    (acc, curr) => {
+      if (curr.date === todayStr) {
+        const amt =
+          typeof curr.amount === "number" && !isNaN(curr.amount)
+            ? curr.amount
+            : 0;
+        if (curr.type === "income") acc.income += amt;
+        else if (curr.type === "expense") acc.expense += amt;
+      }
+      return acc;
+    },
+    { income: 0, expense: 0 },
+  );
+
   const categoryExpenses = transactions
     .filter(
       (tx) =>
@@ -333,18 +353,18 @@ export function Dashboard() {
 
         <div className="flex flex-col sm:flex-row sm:items-center justify-end gap-3 md:gap-4">
           <div className="flex items-center gap-3 w-full sm:w-auto">
-            <div className="relative flex-1 sm:flex-initial">
+            <div className="relative flex-initial">
               <motion.button
                 whileHover={{ scale: 1.05 }}
                 whileTap={{ scale: 0.95 }}
                 onClick={() => setShowExportMenu(!showExportMenu)}
                 disabled={transactions.length === 0}
-                className="w-full px-4 md:px-6 py-3 md:py-3.5 rounded-2xl bg-[var(--bg-card)] border border-[var(--border-color)] text-xs md:text-sm font-black flex items-center justify-center sm:justify-start gap-3 shadow-xl hover:bg-zinc-50 dark:hover:bg-zinc-800 transition-all"
+                className="px-3 sm:px-4 md:px-6 py-3 md:py-3.5 rounded-2xl bg-[var(--bg-card)] border border-[var(--border-color)] text-xs md:text-sm font-black flex items-center justify-center gap-1.5 md:gap-3 shadow-xl hover:bg-zinc-50 dark:hover:bg-zinc-800 transition-all h-[48px] md:h-[54px]"
               >
-                <Download className="w-4 h-4 md:w-5 md:h-5 text-blue-500" />
-                <span>Xuất</span>
+                <Download className="w-4 h-4 md:w-5 md:h-5 text-blue-500 shrink-0" />
+                <span className="hidden sm:inline">Xuất</span>
                 <ChevronDown
-                  className={`w-3 h-3 transition-transform ${showExportMenu ? "rotate-180" : ""}`}
+                  className={`w-3 h-3 transition-transform shrink-0 ${showExportMenu ? "rotate-180" : ""}`}
                 />
               </motion.button>
               <AnimatePresence>
@@ -353,19 +373,31 @@ export function Dashboard() {
                     initial={{ opacity: 0, y: 10, scale: 0.9 }}
                     animate={{ opacity: 1, y: 0, scale: 1 }}
                     exit={{ opacity: 0, y: 10, scale: 0.9 }}
-                    className="absolute top-full right-0 mt-4 p-2 bg-[var(--bg-card)] border border-[var(--border-color)] rounded-3xl z-[110] w-56 shadow-2xl backdrop-blur-xl"
+                    className="absolute top-full left-0 sm:left-auto sm:right-0 mt-4 p-2 bg-[var(--bg-card)] border border-[var(--border-color)] rounded-3xl z-[110] w-56 shadow-2xl backdrop-blur-xl"
                   >
                     <button
                       onClick={() => {
                         handleExportCSV();
                         setShowExportMenu(false);
                       }}
-                      className="w-full flex items-center gap-4 p-4 rounded-2xl hover:bg-black/5 transition-all text-left text-xs font-black uppercase tracking-widest"
+                      className="w-full flex items-center gap-4 p-3 rounded-2xl hover:bg-black/5 dark:hover:bg-white/5 transition-all text-left text-xs font-black uppercase tracking-widest text-[var(--text-main)]"
                     >
-                      <div className="w-10 h-10 rounded-xl bg-emerald-500/10 flex items-center justify-center text-emerald-500">
+                      <div className="w-10 h-10 rounded-xl bg-emerald-500/10 flex items-center justify-center text-emerald-500 shrink-0">
                         CSV
                       </div>
                       <span>Tải file CSV</span>
+                    </button>
+                    <button
+                      onClick={() => {
+                        handleExportExcel();
+                        setShowExportMenu(false);
+                      }}
+                      className="w-full flex items-center gap-4 p-3 rounded-2xl hover:bg-black/5 dark:hover:bg-white/5 transition-all text-left text-xs font-black uppercase tracking-widest text-[var(--text-main)]"
+                    >
+                      <div className="w-10 h-10 rounded-xl bg-blue-500/10 flex items-center justify-center text-blue-500 shrink-0">
+                        XLS
+                      </div>
+                      <span>Tải file Excel</span>
                     </button>
                   </motion.div>
                 )}
@@ -405,6 +437,12 @@ export function Dashboard() {
           <div className="md:col-span-2 grid grid-cols-1 md:grid-cols-2 gap-6 md:gap-8 relative pt-10 md:pt-0">
             <div className="absolute top-0 md:-top-14 right-0 sm:right-2 flex bg-[var(--bg-card)] p-1 rounded-2xl border border-[var(--border-color)] shadow-sm backdrop-blur-xl scale-90 origin-right">
               <button
+                onClick={() => setStatsMode("day")}
+                className={`px-4 py-1.5 text-[9px] font-black uppercase tracking-widest rounded-xl transition-all ${statsMode === "day" ? "bg-blue-600 text-white shadow-xl shadow-blue-500/20" : "text-[var(--text-muted)] hover:bg-zinc-100 dark:hover:bg-zinc-800"}`}
+              >
+                Ngày
+              </button>
+              <button
                 onClick={() => setStatsMode("month")}
                 className={`px-4 py-1.5 text-[9px] font-black uppercase tracking-widest rounded-xl transition-all ${statsMode === "month" ? "bg-blue-600 text-white shadow-xl shadow-blue-500/20" : "text-[var(--text-muted)] hover:bg-zinc-100 dark:hover:bg-zinc-800"}`}
               >
@@ -419,17 +457,37 @@ export function Dashboard() {
             </div>
 
             <StatsCard
-              title={statsMode === "month" ? "Thu nhập tháng" : "Tổng thu nhập"}
+              title={
+                statsMode === "day"
+                  ? "Thu nhập ngày"
+                  : statsMode === "month"
+                  ? "Thu nhập tháng"
+                  : "Tổng thu nhập"
+              }
               amount={
-                statsMode === "month" ? totals.income : allTimeTotals.income
+                statsMode === "day"
+                  ? dailyTotals.income
+                  : statsMode === "month"
+                  ? totals.income
+                  : allTimeTotals.income
               }
               icon={TrendingUp}
               color="emerald"
             />
             <StatsCard
-              title={statsMode === "month" ? "Chi tiêu tháng" : "Tổng chi tiêu"}
+              title={
+                statsMode === "day"
+                  ? "Chi tiêu ngày"
+                  : statsMode === "month"
+                  ? "Chi tiêu tháng"
+                  : "Tổng chi tiêu"
+              }
               amount={
-                statsMode === "month" ? totals.expense : allTimeTotals.expense
+                statsMode === "day"
+                  ? dailyTotals.expense
+                  : statsMode === "month"
+                  ? totals.expense
+                  : allTimeTotals.expense
               }
               icon={TrendingDown}
               color="rose"
@@ -439,6 +497,12 @@ export function Dashboard() {
           {/* Group 2: Balance */}
           <div className="relative pt-10 md:pt-0">
             <div className="absolute top-0 md:-top-14 right-0 sm:right-2 flex bg-[var(--bg-card)] p-1 rounded-2xl border border-[var(--border-color)] shadow-sm backdrop-blur-xl scale-90 origin-right">
+              <button
+                onClick={() => setBalanceMode("day")}
+                className={`px-4 py-1.5 text-[9px] font-black uppercase tracking-widest rounded-xl transition-all ${balanceMode === "day" ? "bg-blue-600 text-white shadow-xl shadow-blue-500/20" : "text-[var(--text-muted)] hover:bg-zinc-100 dark:hover:bg-zinc-800"}`}
+              >
+                Ngày
+              </button>
               <button
                 onClick={() => setBalanceMode("month")}
                 className={`px-4 py-1.5 text-[9px] font-black uppercase tracking-widest rounded-xl transition-all ${balanceMode === "month" ? "bg-blue-600 text-white shadow-xl shadow-blue-500/20" : "text-[var(--text-muted)] hover:bg-zinc-100 dark:hover:bg-zinc-800"}`}
@@ -455,10 +519,16 @@ export function Dashboard() {
 
             <StatsCard
               title={
-                balanceMode === "month" ? "Dư tháng này" : "Số dư hiện tại"
+                balanceMode === "day"
+                  ? "Dư ngày hôm nay"
+                  : balanceMode === "month"
+                  ? "Dư tháng này"
+                  : "Số dư hiện tại"
               }
               amount={
-                balanceMode === "month"
+                balanceMode === "day"
+                  ? dailyTotals.income - dailyTotals.expense
+                  : balanceMode === "month"
                   ? totals.income - totals.expense
                   : allTimeTotals.income - allTimeTotals.expense
               }
@@ -716,11 +786,18 @@ export function Dashboard() {
   );
 
   function handleExportCSV() {
-    const headers = ["Ngày", "Loại", "Danh mục", "Số tiền", "Mục đích"];
+    const headers = ["Ngày", "Loại", "Danh mục", "Số tiền", "Mục đích", "Ghi chú"];
     const csvContent = [
       headers.join(","),
       ...transactions.map((tx) =>
-        [tx.date, tx.type, tx.category, tx.amount, tx.purpose].join(","),
+        [
+          tx.date,
+          tx.type === "income" ? "Thu nhập" : "Chi tiêu",
+          tx.category,
+          tx.amount,
+          tx.purpose,
+          tx.note || "",
+        ].join(","),
       ),
     ].join("\n");
     const blob = new Blob(["\uFEFF" + csvContent], {
@@ -730,6 +807,75 @@ export function Dashboard() {
     const link = document.createElement("a");
     link.href = url;
     link.download = `Bao-cao-${monthYear}.csv`;
+    link.click();
+  }
+
+  function handleExportExcel() {
+    const html = `
+      <html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns="http://www.w3.org/TR/REC-html40">
+      <head>
+        <!--[if gte mso 9]>
+        <xml>
+          <x:ExcelWorkbook>
+            <x:ExcelWorksheets>
+              <x:ExcelWorksheet>
+                <x:Name>Báo cáo chi tiêu</x:Name>
+                <x:WorksheetOptions>
+                  <x:DisplayGridlines/>
+                </x:WorksheetOptions>
+              </x:ExcelWorksheet>
+            </x:ExcelWorksheets>
+          </x:ExcelWorkbook>
+        </xml>
+        <![endif]-->
+        <meta charset="utf-8">
+        <style>
+          table { border-collapse: collapse; width: 100%; font-family: sans-serif; }
+          th { background-color: #2563eb; color: white; font-weight: bold; font-size: 13px; }
+          td, th { border: 1px solid #e2e8f0; padding: 10px; text-align: left; font-size: 12px; }
+          tr:nth-child(even) { background-color: #f8fafc; }
+          .income { color: #10b981; font-weight: bold; }
+          .expense { color: #ef4444; font-weight: bold; }
+        </style>
+      </head>
+      <body>
+        <h2 style="font-family: sans-serif; color: #1e3a8a;">Báo cáo thu chi - Tháng ${monthYear}</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Ngày</th>
+              <th>Loại</th>
+              <th>Danh mục</th>
+              <th>Số tiền</th>
+              <th>Mục đích</th>
+              <th>Ghi chú</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${transactions
+              .map(
+                (tx) => `
+              <tr>
+                <td>${tx.date}</td>
+                <td class="${tx.type}">${tx.type === "income" ? "Thu nhập" : "Chi tiêu"}</td>
+                <td>${tx.category}</td>
+                <td>${tx.amount.toLocaleString("vi-VN")}đ</td>
+                <td>${tx.purpose}</td>
+                <td>${tx.note || ""}</td>
+              </tr>
+            `,
+              )
+              .join("")}
+          </tbody>
+        </table>
+      </body>
+      </html>
+    `;
+    const blob = new Blob([html], { type: "application/vnd.ms-excel;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `Bao-cao-${monthYear}.xls`;
     link.click();
   }
 }
