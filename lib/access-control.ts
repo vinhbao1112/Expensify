@@ -25,8 +25,8 @@ export function compareAccessRole(left: AccessRole, right: AccessRole) {
 }
 
 export async function ensureAccessSheet(spreadsheetId: string, service: GoogleSheetsService) {
-  const spreadsheet = await service.getSpreadsheet(spreadsheetId)
-  const exists = spreadsheet.data.sheets?.some((sheet) => sheet.properties?.title === ACL_SHEET_TITLE)
+  const spreadsheet: any = await service.getSpreadsheet(spreadsheetId)
+  const exists = spreadsheet.data.sheets?.some((sheet: any) => sheet.properties?.title === ACL_SHEET_TITLE)
 
   if (!exists) {
     await service.batchUpdate(spreadsheetId, {
