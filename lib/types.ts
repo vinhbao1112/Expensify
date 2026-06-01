@@ -3,6 +3,10 @@ export interface Category {
   icon: string
   color?: string
   image?: string
+  parent?: string
+  hidden?: boolean
+  order?: number
+  aliases?: string[]
 }
 
 export interface Transaction {
@@ -13,6 +17,10 @@ export interface Transaction {
   amount: number
   purpose: string
   note: string
+  attachment?: string
+  createdBy?: string
+  updatedBy?: string
+  isSample?: boolean
   createdAt?: string
   rowIndex?: number
 }

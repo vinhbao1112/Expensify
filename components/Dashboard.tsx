@@ -17,9 +17,31 @@ import {
 import { StatsCard } from "./StatsCard";
 import { TransactionList } from "./TransactionList";
 import { AddTransactionModal } from "./AddTransactionModal";
+import { InsightsPanel } from "./InsightsPanel";
+import { ReportingCenter } from "./ReportingCenter";
+import { ExperienceHub } from "./ExperienceHub";
+import { BackupCenter } from "./BackupCenter";
+import { AccessControlPanel } from "./AccessControlPanel";
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useSession } from "next-auth/react";
 import { WeatherWidget } from "./WeatherWidget";
+import {
+  advanceRecurringTemplate,
+  loadRecurringTemplates,
+  saveRecurringTemplates,
+} from "@/lib/recurring";
+import {
+  createDemoTransactions,
+  loadDemoMode,
+  saveDemoMode,
+} from "@/lib/automation";
+import {
+  buildBackupSnapshot,
+  type BackupSnapshot,
+  loadCache,
+  saveBackupSnapshot,
+  saveCache,
+} from "@/lib/backup";
 
 function TypewriterText({ text }: { text: string }) {
   const characters = Array.from(text);
@@ -53,6 +75,17 @@ function TypewriterText({ text }: { text: string }) {
   );
 }
 
+type HistoryAction =
+  | {
+      kind: "create" | "delete"
+      transaction: Transaction
+    }
+  | {
+      kind: "edit"
+      before: Transaction
+      after: Transaction
+    }
+
 export function Dashboard() {
   const { data: session, status } = useSession();
   const [transactions, setTransactions] = useState<Transaction[]>([]);
@@ -63,17 +96,28 @@ export function Dashboard() {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingTransaction, setEditingTransaction] =
     useState<Transaction | null>(null);
+  const [copyTransaction, setCopyTransaction] = useState<Transaction | null>(null);
   const [showExportMenu, setShowExportMenu] = useState(false);
   const [statsMode, setStatsMode] = useState<"day" | "month" | "all">("month");
   const [balanceMode, setBalanceMode] = useState<"day" | "month" | "all">("all");
   const [todayStr, setTodayStr] = useState("");
   const [allTimeTotals, setAllTimeTotals] = useState({ income: 0, expense: 0 });
   const [loadingAllTime, setLoadingAllTime] = useState(false);
+  const [analyticsTransactions, setAnalyticsTransactions] = useState<Transaction[]>([]);
+  const [loadingAnalytics, setLoadingAnalytics] = useState(false);
+  const [isLoadingMonthData, setIsLoadingMonthData] = useState(false);
+  const [isSeedingDemoData, setIsSeedingDemoData] = useState(false);
   const [activeTab, setActiveTab] = useState<"overview" | "history">(
     "overview",
   );
   const [recentLimit, setRecentLimit] = useState(5);
+  const [historyStack, setHistoryStack] = useState<HistoryAction[]>([]);
+  const [redoStack, setRedoStack] = useState<HistoryAction[]>([]);
+  const [isDemoMode, setIsDemoMode] = useState(false);
+  const [showSampleData, setShowSampleData] = useState(true);
+  const [accessRole, setAccessRole] = useState<"viewer" | "editor" | "admin" | null>(null);
   const spreadsheetIdRef = useRef(spreadsheetId);
+  const recurringProcessedDateRef = useRef<string>("");
 
   useEffect(() => {
     spreadsheetIdRef.current = spreadsheetId;
@@ -83,35 +127,80 @@ export function Dashboard() {
     setTodayStr(new Date().toLocaleDateString("sv-SE"));
   }, []);
 
-  const loadData = useCallback(
-    async (targetId?: string) => {
-      if (status !== "authenticated") return;
+  useEffect(() => {
+    setIsDemoMode(loadDemoMode())
+  }, []);
 
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    const raw = localStorage.getItem("expensify_show_sample_data")
+    if (raw === null) return
+    setShowSampleData(raw !== "0")
+  }, []);
+
+  useEffect(() => {
+    if (!spreadsheetId || status !== "authenticated") return
+
+    const loadAccess = async () => {
       try {
-        const idToUse =
-          targetId !== undefined ? targetId : spreadsheetIdRef.current;
+        const res = await fetch(`/api/access?spreadsheetId=${spreadsheetId}`)
+        if (!res.ok) return
+        const data = await res.json()
+        setAccessRole(data.role || null)
+      } catch (error) {
+        console.error("Error loading access role:", error)
+      }
+    }
 
-        // 1. Fetch Transactions (and discover Spreadsheet ID if missing)
-        const [year, month] = monthYear.split("-");
-        const formattedMonthYear = `${month}-${year}`;
+    void loadAccess()
+  }, [spreadsheetId, status])
+
+  const loadData = useCallback(
+      async (targetId?: string) => {
+        if (status !== "authenticated") return;
+
+        try {
+          const idToUse =
+            targetId !== undefined ? targetId : spreadsheetIdRef.current;
+          const cached = idToUse ? loadCache(idToUse) : null;
+          if (cached?.transactions?.length && transactions.length === 0) {
+            setTransactions(cached.transactions);
+            if (cached.allTimeTotals) {
+              setAllTimeTotals(cached.allTimeTotals);
+            }
+          }
+
+          // 1. Fetch Transactions (and discover Spreadsheet ID if missing)
+          const [year, month] = monthYear.split("-");
+          const formattedMonthYear = `${month}-${year}`;
 
         let fetchUrl = `/api/transactions?monthYear=${formattedMonthYear}`;
         if (idToUse) fetchUrl += `&spreadsheetId=${idToUse}`;
 
         const res = await fetch(fetchUrl);
-        if (!res.ok) {
-          if (res.status === 403 || res.status === 404 || res.status === 500) {
-            if (idToUse) {
-              setSpreadsheetId("");
-              if (session?.user?.email)
-                localStorage.removeItem(`expensify_id_${session?.user?.email}`);
+          if (!res.ok) {
+            if (res.status === 403 || res.status === 404) {
+              if (idToUse) {
+                setSpreadsheetId("");
+                if (session?.user?.email)
+                  localStorage.removeItem(`expensify_id_${session?.user?.email}`);
+              }
+            } else if (res.status === 429 || res.status >= 500) {
+              console.warn("Google API tạm thời gặp lỗi, đang dùng cache nếu có.")
+              const cached = idToUse ? loadCache(idToUse) : null
+              if (cached?.transactions) {
+                setTransactions(cached.transactions)
+                if (cached.allTimeTotals) {
+                  setAllTimeTotals(cached.allTimeTotals)
+                }
+              }
             }
+            return;
           }
-          return;
-        }
 
         const data = await res.json();
-        setTransactions(data.transactions || []);
+        const nextTransactions = data.transactions || [];
+        setTransactions(nextTransactions);
 
         let currentId = idToUse;
         // Update ID if backend found/created a new one
@@ -126,6 +215,17 @@ export function Dashboard() {
           }
         }
 
+        if (currentId) {
+          const snapshot = buildBackupSnapshot(currentId, monthYear, nextTransactions)
+          saveBackupSnapshot(snapshot)
+          saveCache({
+            savedAt: new Date().toISOString(),
+            spreadsheetId: currentId,
+            monthYear,
+            transactions: nextTransactions,
+          })
+        }
+
         // 2. Fetch All-Time Totals if we have an ID
         if (currentId) {
           setLoadingAllTime(true);
@@ -136,6 +236,13 @@ export function Dashboard() {
             if (totalsRes.ok) {
               const totalsData = await totalsRes.json();
               setAllTimeTotals(totalsData);
+              saveCache({
+                savedAt: new Date().toISOString(),
+                spreadsheetId: currentId,
+                monthYear,
+                transactions: nextTransactions,
+                allTimeTotals: totalsData,
+              });
             }
           } finally {
             setLoadingAllTime(false);
@@ -143,10 +250,42 @@ export function Dashboard() {
         }
       } catch (error) {
         console.error("Error loading dashboard data:", error);
+        const fallbackId = targetId !== undefined ? targetId : spreadsheetIdRef.current;
+        const cached = fallbackId ? loadCache(fallbackId) : null;
+        if (cached?.transactions) {
+          setTransactions(cached.transactions);
+          if (cached.allTimeTotals) {
+            setAllTimeTotals(cached.allTimeTotals);
+          }
+        }
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [monthYear, status, session],
+  );
+
+  const loadAnalytics = useCallback(
+    async (targetId?: string) => {
+      if (status !== "authenticated") return;
+
+      const idToUse =
+        targetId !== undefined ? targetId : spreadsheetIdRef.current;
+      if (!idToUse) return;
+
+      try {
+        setLoadingAnalytics(true);
+        const res = await fetch(`/api/analytics?spreadsheetId=${idToUse}`);
+        if (!res.ok) return;
+
+        const data = await res.json();
+        setAnalyticsTransactions(data.transactions || []);
+      } catch (error) {
+        console.error("Error loading analytics data:", error);
+      } finally {
+        setLoadingAnalytics(false);
+      }
+    },
+    [status],
   );
 
   // Initialize spreadsheetId from localStorage once session is ready
@@ -158,6 +297,7 @@ export function Dashboard() {
       if (saved) {
         setSpreadsheetId(saved);
         loadData(saved); // Load immediately with the saved ID
+        loadAnalytics(saved);
       } else {
         loadData(); // No saved ID, discover one
       }
@@ -169,13 +309,377 @@ export function Dashboard() {
     // Only load if we have a spreadsheetId (to avoid double discovery)
     if (spreadsheetId) {
       loadData(spreadsheetId);
+      loadAnalytics(spreadsheetId);
     }
 
-    const handleRefresh = () => loadData(spreadsheetIdRef.current);
+    const handleRefresh = () => {
+      loadData(spreadsheetIdRef.current);
+      loadAnalytics(spreadsheetIdRef.current);
+    };
     window.addEventListener("transaction-added", handleRefresh);
     return () => window.removeEventListener("transaction-added", handleRefresh);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loadData, spreadsheetId]);
+  }, [loadData, loadAnalytics, spreadsheetId]);
+
+  useEffect(() => {
+    if (status !== "authenticated" || !spreadsheetId) return
+    setTransactions([])
+    setAnalyticsTransactions([])
+    let cancelled = false
+    const run = async () => {
+      setIsLoadingMonthData(true)
+      try {
+        await Promise.all([loadData(spreadsheetId), loadAnalytics(spreadsheetId)])
+      } finally {
+        if (!cancelled) setIsLoadingMonthData(false)
+      }
+    }
+    void run()
+    return () => {
+      cancelled = true
+    }
+  }, [monthYear, loadAnalytics, loadData, spreadsheetId, status])
+
+  const refreshCurrentData = useCallback(async () => {
+    const currentSpreadsheetId = spreadsheetIdRef.current
+    if (!currentSpreadsheetId) return
+    await loadData(currentSpreadsheetId)
+    await loadAnalytics(currentSpreadsheetId)
+  }, [loadAnalytics, loadData])
+
+  const pushHistoryAction = useCallback((action: HistoryAction) => {
+    setHistoryStack((current) => [action, ...current].slice(0, 10))
+    setRedoStack([])
+  }, [])
+
+  const findCurrentTransaction = useCallback(
+    (id: string) => transactions.find((tx) => tx.id === id),
+    [transactions],
+  )
+
+  const handleUseDemoMode = useCallback(() => {
+    saveDemoMode(true)
+    setIsDemoMode(true)
+  }, [])
+
+  const handleDisableDemoMode = useCallback(() => {
+    saveDemoMode(false)
+    setIsDemoMode(false)
+  }, [])
+
+  const handleToggleShowSampleData = useCallback(() => {
+    setShowSampleData((current) => {
+      const next = !current
+      localStorage.setItem("expensify_show_sample_data", next ? "1" : "0")
+      return next
+    })
+  }, [])
+
+  const handleSeedDemoData = useCallback(async () => {
+    if (!spreadsheetIdRef.current) return
+    if (isSeedingDemoData) return false
+    if (transactions.some((tx) => tx.isSample)) {
+      return true
+    }
+    if (!window.confirm("Thêm dữ liệu mẫu vào Excel để có thể sửa/xóa riêng từng dòng?")) return
+
+    setIsSeedingDemoData(true)
+    const demoRows = createDemoTransactions(monthYear)
+    const requests = demoRows.map((transaction) =>
+      fetch("/api/transactions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ...transaction,
+          spreadsheetId: spreadsheetIdRef.current,
+          isSample: true,
+        }),
+      }),
+    )
+
+    try {
+      const results = await Promise.all(requests)
+      const allOk = results.every((response) => response.ok)
+      if (!allOk) {
+        alert("Có một số dòng dữ liệu mẫu chưa được ghi thành công.")
+      } else {
+        alert("Đã nạp dữ liệu mẫu vào Excel.")
+      }
+      await refreshCurrentData()
+      return true
+    } catch (error) {
+      console.error("Error seeding demo data:", error)
+      alert("Không thể nạp dữ liệu mẫu vào Excel.")
+      return false
+    } finally {
+      setIsSeedingDemoData(false)
+    }
+  }, [isSeedingDemoData, monthYear, refreshCurrentData, transactions])
+
+  const handleDeleteSampleData = useCallback(async () => {
+    if (!spreadsheetIdRef.current) return
+    if (accessRole !== "admin") {
+      alert("Chỉ admin mới được xóa dữ liệu mẫu khỏi Excel.")
+      return
+    }
+    if (!window.confirm("Xóa toàn bộ dữ liệu mẫu khỏi Excel?")) return
+
+    try {
+      const res = await fetch("/api/transactions/delete-sample", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ spreadsheetId: spreadsheetIdRef.current }),
+      })
+      const data = await res.json()
+      if (!res.ok) {
+        alert(data.error || "Không thể xóa dữ liệu mẫu.")
+        return
+      }
+      await refreshCurrentData()
+      alert("Đã xóa toàn bộ dữ liệu mẫu khỏi Excel.")
+    } catch (error) {
+      console.error("Error deleting sample data:", error)
+      alert("Không thể xóa dữ liệu mẫu.")
+    }
+  }, [accessRole, refreshCurrentData])
+
+  const openAddTransaction = useCallback(() => {
+    if (accessRole === "viewer") return
+    setEditingTransaction(null)
+    setCopyTransaction(null)
+    setIsModalOpen(true)
+  }, [accessRole])
+
+  const focusTransactionSearch = useCallback(() => {
+    window.dispatchEvent(new Event("focus-transaction-search"))
+    setActiveTab("history")
+  }, [])
+
+  const undoLastAction = useCallback(async () => {
+    const action = historyStack[0]
+    if (!action || !spreadsheetIdRef.current) return
+
+    const [year, month] = monthYear.split("-")
+    const formattedMonthYear = `${month}-${year}`
+
+      try {
+      if (action.kind === "create") {
+        const current = findCurrentTransaction(action.transaction.id)
+        if (!current?.rowIndex) return
+        const response = await fetch(
+          `/api/transactions?monthYear=${formattedMonthYear}&rowIndex=${current.rowIndex}&spreadsheetId=${spreadsheetIdRef.current}`,
+          { method: "DELETE" },
+        )
+        if (!response.ok) throw new Error("Undo create failed")
+      } else if (action.kind === "delete") {
+        const response = await fetch("/api/transactions", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            ...action.transaction,
+            spreadsheetId: spreadsheetIdRef.current,
+          }),
+        })
+        if (!response.ok) throw new Error("Undo delete failed")
+      } else if (action.kind === "edit") {
+        const current = findCurrentTransaction(action.after.id)
+        if (!current?.rowIndex) return
+        const response = await fetch("/api/transactions", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            monthYear: formattedMonthYear,
+            rowIndex: current.rowIndex,
+            spreadsheetId: spreadsheetIdRef.current,
+            transaction: action.before,
+          }),
+        })
+        if (!response.ok) throw new Error("Undo edit failed")
+      }
+
+      setHistoryStack((current) => current.slice(1))
+      setRedoStack((current) => [action, ...current].slice(0, 10))
+      await refreshCurrentData()
+    } catch (error) {
+      console.error("Undo failed:", error)
+    }
+  }, [findCurrentTransaction, historyStack, monthYear, refreshCurrentData])
+
+  const redoLastAction = useCallback(async () => {
+    const action = redoStack[0]
+    if (!action || !spreadsheetIdRef.current) return
+
+    const [year, month] = monthYear.split("-")
+    const formattedMonthYear = `${month}-${year}`
+
+    try {
+      if (action.kind === "create") {
+        const response = await fetch("/api/transactions", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            ...action.transaction,
+            spreadsheetId: spreadsheetIdRef.current,
+          }),
+        })
+        if (!response.ok) throw new Error("Redo create failed")
+      } else if (action.kind === "delete") {
+        const current = findCurrentTransaction(action.transaction.id)
+        if (!current?.rowIndex) return
+        const response = await fetch(
+          `/api/transactions?monthYear=${formattedMonthYear}&rowIndex=${current.rowIndex}&spreadsheetId=${spreadsheetIdRef.current}`,
+          { method: "DELETE" },
+        )
+        if (!response.ok) throw new Error("Redo delete failed")
+      } else if (action.kind === "edit") {
+        const current = findCurrentTransaction(action.after.id)
+        if (!current?.rowIndex) return
+        const response = await fetch("/api/transactions", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            monthYear: formattedMonthYear,
+            rowIndex: current.rowIndex,
+            spreadsheetId: spreadsheetIdRef.current,
+            transaction: action.after,
+          }),
+        })
+        if (!response.ok) throw new Error("Redo edit failed")
+      }
+
+      setRedoStack((current) => current.slice(1))
+      setHistoryStack((current) => [action, ...current].slice(0, 10))
+      await refreshCurrentData()
+    } catch (error) {
+      console.error("Redo failed:", error)
+    }
+  }, [findCurrentTransaction, monthYear, redoStack, refreshCurrentData])
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null
+      const isTyping =
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        target instanceof HTMLSelectElement ||
+        target?.isContentEditable
+
+      if (event.key === "Escape" && isModalOpen) {
+        setIsModalOpen(false)
+        setEditingTransaction(null)
+        setCopyTransaction(null)
+        return
+      }
+
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
+        event.preventDefault()
+        focusTransactionSearch()
+        return
+      }
+
+      if (!isTyping && !isModalOpen && event.key.toLowerCase() === "n") {
+        event.preventDefault()
+        openAddTransaction()
+        return
+      }
+
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z" && !event.shiftKey) {
+        event.preventDefault()
+        void undoLastAction()
+        return
+      }
+
+      if (
+        ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "y") ||
+        ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === "z")
+      ) {
+        event.preventDefault()
+        void redoLastAction()
+      }
+    }
+
+    window.addEventListener("keydown", handleKeyDown)
+    return () => window.removeEventListener("keydown", handleKeyDown)
+  }, [focusTransactionSearch, isModalOpen, openAddTransaction, redoLastAction, undoLastAction])
+
+  useEffect(() => {
+    if (!spreadsheetId || !todayStr) return
+    if (recurringProcessedDateRef.current === todayStr) return
+
+    const templates = loadRecurringTemplates(spreadsheetId)
+    const dueTemplates = templates.filter(
+      (template) =>
+        template.enabled &&
+        template.nextRunDate <= todayStr &&
+        template.lastGeneratedDate !== todayStr,
+    )
+
+    if (dueTemplates.length === 0) {
+      recurringProcessedDateRef.current = todayStr
+      return
+    }
+
+    const run = async () => {
+      let changed = false
+      let nextTemplates = [...templates]
+
+      for (const template of dueTemplates) {
+        const response = await fetch("/api/transactions", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            ...template.transaction,
+            spreadsheetId,
+          }),
+        })
+
+        if (response.ok) {
+          changed = true
+          const index = nextTemplates.findIndex((item) => item.id === template.id)
+          if (index >= 0) {
+            nextTemplates[index] = advanceRecurringTemplate({
+              ...template,
+              lastGeneratedDate: todayStr,
+            })
+          }
+        }
+      }
+
+      if (changed) {
+        saveRecurringTemplates(spreadsheetId, nextTemplates)
+        await loadData(spreadsheetId)
+        await loadAnalytics(spreadsheetId)
+      }
+
+      recurringProcessedDateRef.current = todayStr
+    }
+
+    void run()
+  }, [todayStr, spreadsheetId, loadData, loadAnalytics]);
+
+  useEffect(() => {
+    if (!spreadsheetId || status !== "authenticated") return
+
+    const sync = () => {
+      void refreshCurrentData()
+    }
+
+    const interval = window.setInterval(sync, 5 * 60 * 1000)
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        sync()
+      }
+    }
+
+    window.addEventListener("focus", sync)
+    document.addEventListener("visibilitychange", handleVisibilityChange)
+
+    return () => {
+      window.clearInterval(interval)
+      window.removeEventListener("focus", sync)
+      document.removeEventListener("visibilitychange", handleVisibilityChange)
+    }
+  }, [refreshCurrentData, spreadsheetId, status])
 
   const handleClearMonth = async () => {
     if (!spreadsheetId) return;
@@ -228,35 +732,44 @@ export function Dashboard() {
     }
   };
 
-  const totals = transactions.reduce(
+  const demoTransactions = createDemoTransactions(monthYear)
+  const effectiveTransactions = transactions
+
+  const canWrite = accessRole !== "viewer"
+  const canAdmin = accessRole === "admin"
+  const visibleTransactions = showSampleData
+    ? effectiveTransactions
+    : effectiveTransactions.filter((tx) => !tx.isSample)
+  const visibleAnalyticsTransactions = showSampleData
+    ? analyticsTransactions
+    : analyticsTransactions.filter((tx) => !tx.isSample)
+  const visibleCurrentTotals = visibleTransactions.reduce(
     (acc, curr) => {
       const amt =
         typeof curr.amount === "number" && !isNaN(curr.amount)
           ? curr.amount
-          : 0;
-      if (curr.type === "income") acc.income += amt;
-      else if (curr.type === "expense") acc.expense += amt;
-      return acc;
+          : 0
+      if (curr.type === "income") acc.income += amt
+      else if (curr.type === "expense") acc.expense += amt
+      return acc
     },
     { income: 0, expense: 0 },
-  );
-
-  const dailyTotals = transactions.reduce(
+  )
+  const visibleDailyTotals = visibleTransactions.reduce(
     (acc, curr) => {
       if (curr.date === todayStr) {
         const amt =
           typeof curr.amount === "number" && !isNaN(curr.amount)
             ? curr.amount
-            : 0;
-        if (curr.type === "income") acc.income += amt;
-        else if (curr.type === "expense") acc.expense += amt;
+            : 0
+        if (curr.type === "income") acc.income += amt
+        else if (curr.type === "expense") acc.expense += amt
       }
-      return acc;
+      return acc
     },
     { income: 0, expense: 0 },
-  );
-
-  const categoryExpenses = transactions
+  )
+  const visibleCategoryExpenses = visibleTransactions
     .filter(
       (tx) =>
         tx.type === "expense" &&
@@ -266,11 +779,115 @@ export function Dashboard() {
     )
     .reduce(
       (acc, curr) => {
-        acc[curr.category] = (acc[curr.category] || 0) + curr.amount;
-        return acc;
+        acc[curr.category] = (acc[curr.category] || 0) + curr.amount
+        return acc
       },
       {} as Record<string, number>,
-    );
+    )
+  const visibleAllTimeTotals = visibleAnalyticsTransactions.reduce(
+    (acc, curr) => {
+      const amt =
+        typeof curr.amount === "number" && !isNaN(curr.amount)
+          ? curr.amount
+          : 0
+      if (curr.type === "income") acc.income += amt
+      else if (curr.type === "expense") acc.expense += amt
+      return acc
+    },
+    { income: 0, expense: 0 },
+  )
+  const displayAllTimeTotals =
+    transactions.length > 0
+      ? visibleAllTimeTotals
+      : { income: visibleCurrentTotals.income, expense: visibleCurrentTotals.expense }
+
+  useEffect(() => {
+    if (!spreadsheetId || visibleTransactions.length === 0) return
+
+    const timer = window.setInterval(() => {
+      const snapshot = buildBackupSnapshot(spreadsheetId, monthYear, visibleTransactions)
+      saveBackupSnapshot(snapshot)
+    }, 10 * 60 * 1000)
+
+    return () => window.clearInterval(timer)
+  }, [monthYear, spreadsheetId, visibleTransactions])
+
+  const handleTransactionSaved = useCallback(
+    (result: { mode: "create" | "edit"; transaction: Transaction; previous?: Transaction }) => {
+      if (result.mode === "create") {
+        pushHistoryAction({ kind: "create", transaction: result.transaction })
+        return
+      }
+
+      if (result.previous) {
+        pushHistoryAction({
+          kind: "edit",
+          before: result.previous,
+          after: result.transaction,
+        })
+      }
+    },
+    [pushHistoryAction],
+  )
+
+  const handleTransactionDelete = useCallback(
+    async (tx: Transaction) => {
+      if (!spreadsheetIdRef.current || tx.rowIndex === undefined) return
+      const [year, month] = monthYear.split("-")
+      const formattedMonthYear = `${month}-${year}`
+      const res = await fetch(
+        `/api/transactions?monthYear=${formattedMonthYear}&rowIndex=${tx.rowIndex}&spreadsheetId=${spreadsheetIdRef.current}`,
+        { method: "DELETE" },
+      )
+
+      if (res.ok) {
+        pushHistoryAction({ kind: "delete", transaction: tx })
+        await refreshCurrentData()
+      }
+    },
+    [monthYear, pushHistoryAction, refreshCurrentData],
+  )
+
+  const handleRestoreBackup = useCallback(
+    async (snapshot: BackupSnapshot) => {
+      if (!spreadsheetIdRef.current) return
+      const [year, month] = snapshot.monthYear.split("-")
+      const formattedMonthYear = `${month}-${year}`
+
+      try {
+        await fetch("/api/transactions/clear-month", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            spreadsheetId: spreadsheetIdRef.current,
+            monthYear: formattedMonthYear,
+          }),
+        })
+
+        for (const transaction of snapshot.transactions) {
+          const response = await fetch("/api/transactions", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              ...transaction,
+              spreadsheetId: spreadsheetIdRef.current,
+            }),
+          })
+
+          if (!response.ok) {
+            throw new Error(`Restore failed for ${transaction.purpose}`)
+          }
+        }
+
+        setMonthYear(snapshot.monthYear)
+        saveBackupSnapshot(snapshot)
+        await refreshCurrentData()
+      } catch (error) {
+        console.error("Restore backup failed:", error)
+      }
+    },
+    [refreshCurrentData],
+  )
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 py-8 md:py-12 space-y-10 md:space-y-16">
@@ -326,7 +943,7 @@ export function Dashboard() {
                 <div className="flex gap-2 mt-2">
                   <button
                     onClick={handleClearMonth}
-                    disabled={!spreadsheetId || transactions.length === 0}
+                    disabled={!spreadsheetId || transactions.length === 0 || !canAdmin}
                     className="flex-1 sm:flex-initial flex items-center justify-center gap-2 px-3 py-1.5 rounded-xl bg-rose-500/10 text-rose-600 hover:bg-rose-500 hover:text-white border border-rose-500/20 transition-all disabled:opacity-30 disabled:pointer-events-none"
                     title="Xóa dữ liệu tháng này"
                   >
@@ -335,7 +952,7 @@ export function Dashboard() {
                   </button>
                   <button
                     onClick={handleClearAll}
-                    disabled={!spreadsheetId}
+                    disabled={!spreadsheetId || !canAdmin}
                     className="flex-1 sm:flex-initial flex items-center justify-center gap-2 px-3 py-1.5 rounded-xl bg-orange-500/10 text-orange-600 hover:bg-orange-500 hover:text-white border border-orange-500/20 transition-all disabled:opacity-30 disabled:pointer-events-none"
                     title="Xóa tất cả dữ liệu"
                   >
@@ -410,15 +1027,21 @@ export function Dashboard() {
               className="flex-1 sm:flex-initial bg-[var(--bg-input)] border border-[var(--border-color)] px-4 md:px-6 py-3 md:py-3.5 rounded-2xl font-black text-xs md:text-sm outline-none focus:border-blue-500 transition-all h-[48px] md:h-[54px] text-[var(--text-main)]"
             />
           </div>
-          <motion.button
-            whileHover={{ scale: 1.05, boxShadow: "0 20px 40px rgba(59, 130, 246, 0.4)" }}
-            whileTap={{ scale: 0.95 }}
-            onClick={() => setIsModalOpen(true)}
-            className="w-full sm:w-auto px-6 md:px-8 py-3 md:py-3.5 rounded-2xl bg-blue-600 text-white font-black text-xs md:text-sm shadow-2xl shadow-blue-500/40 hover:bg-blue-700 transition-all h-[48px] md:h-[54px] flex items-center justify-center gap-3 animate-float"
-          >
-            <Plus className="w-5 h-5 md:w-6 md:h-6 stroke-[3px]" />
-            <span>Thêm mới</span>
-          </motion.button>
+            <motion.button
+              whileHover={{ scale: 1.05, boxShadow: "0 20px 40px rgba(59, 130, 246, 0.4)" }}
+              whileTap={{ scale: 0.95 }}
+              onClick={() => {
+                if (!canWrite) return
+                setEditingTransaction(null)
+                setCopyTransaction(null)
+                setIsModalOpen(true)
+              }}
+              disabled={!canWrite}
+              className="w-full sm:w-auto px-6 md:px-8 py-3 md:py-3.5 rounded-2xl bg-blue-600 text-white font-black text-xs md:text-sm shadow-2xl shadow-blue-500/40 hover:bg-blue-700 transition-all h-[48px] md:h-[54px] flex items-center justify-center gap-3 animate-float"
+            >
+              <Plus className="w-5 h-5 md:w-6 md:h-6 stroke-[3px]" />
+              <span>Thêm mới</span>
+            </motion.button>
         </div>
       </header>
 
@@ -457,38 +1080,38 @@ export function Dashboard() {
             </div>
 
             <StatsCard
-              title={
-                statsMode === "day"
-                  ? "Thu nhập ngày"
-                  : statsMode === "month"
-                  ? "Thu nhập tháng"
-                  : "Tổng thu nhập"
-              }
-              amount={
-                statsMode === "day"
-                  ? dailyTotals.income
-                  : statsMode === "month"
-                  ? totals.income
-                  : allTimeTotals.income
-              }
+                title={
+                  statsMode === "day"
+                    ? "Thu nhập ngày"
+                    : statsMode === "month"
+                    ? "Thu nhập tháng"
+                    : "Tổng thu nhập"
+                }
+                amount={
+                  statsMode === "day"
+                    ? visibleDailyTotals.income
+                    : statsMode === "month"
+                    ? visibleCurrentTotals.income
+                    : displayAllTimeTotals.income
+                }
               icon={TrendingUp}
               color="emerald"
             />
             <StatsCard
-              title={
-                statsMode === "day"
-                  ? "Chi tiêu ngày"
-                  : statsMode === "month"
-                  ? "Chi tiêu tháng"
-                  : "Tổng chi tiêu"
-              }
-              amount={
-                statsMode === "day"
-                  ? dailyTotals.expense
-                  : statsMode === "month"
-                  ? totals.expense
-                  : allTimeTotals.expense
-              }
+                title={
+                  statsMode === "day"
+                    ? "Chi tiêu ngày"
+                    : statsMode === "month"
+                    ? "Chi tiêu tháng"
+                    : "Tổng chi tiêu"
+                }
+                amount={
+                  statsMode === "day"
+                    ? visibleDailyTotals.expense
+                    : statsMode === "month"
+                    ? visibleCurrentTotals.expense
+                    : displayAllTimeTotals.expense
+                }
               icon={TrendingDown}
               color="rose"
             />
@@ -527,10 +1150,10 @@ export function Dashboard() {
               }
               amount={
                 balanceMode === "day"
-                  ? dailyTotals.income - dailyTotals.expense
+                  ? visibleDailyTotals.income - visibleDailyTotals.expense
                   : balanceMode === "month"
-                  ? totals.income - totals.expense
-                  : allTimeTotals.income - allTimeTotals.expense
+                  ? visibleCurrentTotals.income - visibleCurrentTotals.expense
+                  : displayAllTimeTotals.income - displayAllTimeTotals.expense
               }
               icon={Wallet}
               color="primary"
@@ -538,6 +1161,59 @@ export function Dashboard() {
           </div>
         </div>
       </div>
+
+      {(loadingAnalytics || analyticsTransactions.length > 0) && (
+        <section className="pt-2">
+          <InsightsPanel
+            transactions={
+              visibleAnalyticsTransactions.length > 0
+                ? visibleAnalyticsTransactions
+                : visibleTransactions
+            }
+            monthYear={monthYear}
+            spreadsheetId={spreadsheetId}
+          />
+        </section>
+      )}
+
+      <section className="pt-2">
+        <ReportingCenter transactions={visibleTransactions} monthYear={monthYear} />
+      </section>
+
+      <section className="pt-2">
+        <ExperienceHub
+          transactions={visibleTransactions}
+          monthYear={monthYear}
+          spreadsheetId={spreadsheetId}
+          demoMode={isDemoMode}
+          showSampleData={showSampleData}
+          hasRealData={transactions.length > 0}
+          hasSampleData={transactions.some((tx) => tx.isSample)}
+          isLoadingMonthData={isLoadingMonthData}
+          isSeedingDemoData={isSeedingDemoData}
+          onEnableDemoMode={handleUseDemoMode}
+          onDisableDemoMode={handleDisableDemoMode}
+          onSeedDemoData={handleSeedDemoData}
+          onToggleShowSampleData={handleToggleShowSampleData}
+          onDeleteSampleData={handleDeleteSampleData}
+          canAdmin={canAdmin}
+          onOpenAddTransaction={openAddTransaction}
+          onFocusSearch={focusTransactionSearch}
+        />
+      </section>
+
+      <section className="pt-2">
+        <AccessControlPanel spreadsheetId={spreadsheetId} />
+      </section>
+
+      <section className="pt-2">
+        <BackupCenter
+          spreadsheetId={spreadsheetId}
+          monthYear={monthYear}
+          transactions={visibleTransactions}
+          onRestore={handleRestoreBackup}
+        />
+      </section>
 
       {/* Tab Switcher — hiển thị cả mobile lẫn desktop */}
       <div className="flex bg-[var(--bg-card)] p-1.5 rounded-2xl border border-[var(--border-color)] shadow-lg sticky top-4 z-[100] backdrop-blur-xl">
@@ -561,12 +1237,31 @@ export function Dashboard() {
       {activeTab === "history" && (
         <div className="pt-4">
           <TransactionList
-            transactions={transactions}
+            transactions={visibleTransactions}
             monthYear={monthYear}
-            onEdit={(tx: Transaction) => {
-              setEditingTransaction(tx);
-              setIsModalOpen(true);
-            }}
+            onEdit={
+              canWrite
+                ? (tx: Transaction) => {
+                    setEditingTransaction(tx);
+                    setCopyTransaction(null);
+                    setIsModalOpen(true);
+                  }
+                : () => {}
+            }
+            onDuplicate={
+              canWrite
+                ? (tx: Transaction) => {
+                    setCopyTransaction({
+                      ...tx,
+                      id: "",
+                      rowIndex: undefined,
+                      date: new Date().toISOString().slice(0, 10),
+                    })
+                    setIsModalOpen(true)
+                  }
+                : undefined
+            }
+            onDelete={canWrite ? handleTransactionDelete : undefined}
             spreadsheetId={spreadsheetId}
           />
         </div>
@@ -607,12 +1302,31 @@ export function Dashboard() {
                 </button>
               </div>
               <TransactionList
-                transactions={transactions}
+                transactions={visibleTransactions}
                 monthYear={monthYear}
-                onEdit={(tx: Transaction) => {
-                  setEditingTransaction(tx);
-                  setIsModalOpen(true);
-                }}
+                onEdit={
+                  canWrite
+                    ? (tx: Transaction) => {
+                        setEditingTransaction(tx);
+                        setCopyTransaction(null);
+                        setIsModalOpen(true);
+                      }
+                    : () => {}
+                }
+                onDuplicate={
+                  canWrite
+                    ? (tx: Transaction) => {
+                        setCopyTransaction({
+                          ...tx,
+                          id: "",
+                          rowIndex: undefined,
+                          date: new Date().toISOString().slice(0, 10),
+                        })
+                        setIsModalOpen(true)
+                      }
+                    : undefined
+                }
+                onDelete={canWrite ? handleTransactionDelete : undefined}
                 spreadsheetId={spreadsheetId}
                 limit={recentLimit}
                 showFilters={false}
@@ -622,12 +1336,31 @@ export function Dashboard() {
             {/* Desktop: Full Transaction List */}
             <div className="hidden lg:block">
               <TransactionList
-                transactions={transactions}
+                transactions={visibleTransactions}
                 monthYear={monthYear}
-                onEdit={(tx: Transaction) => {
-                  setEditingTransaction(tx);
-                  setIsModalOpen(true);
-                }}
+                onEdit={
+                  canWrite
+                    ? (tx: Transaction) => {
+                        setEditingTransaction(tx);
+                        setCopyTransaction(null);
+                        setIsModalOpen(true);
+                      }
+                    : () => {}
+                }
+                onDuplicate={
+                  canWrite
+                    ? (tx: Transaction) => {
+                        setCopyTransaction({
+                          ...tx,
+                          id: "",
+                          rowIndex: undefined,
+                          date: new Date().toISOString().slice(0, 10),
+                        })
+                        setIsModalOpen(true)
+                      }
+                    : undefined
+                }
+                onDelete={canWrite ? handleTransactionDelete : undefined}
                 spreadsheetId={spreadsheetId}
               />
             </div>
@@ -639,13 +1372,13 @@ export function Dashboard() {
               <h3 className="text-xl md:text-2xl font-black mb-1 tracking-tight">
                 Phân bổ chi tiêu
               </h3>
-              {totals.expense > 0 && (
+              {visibleCurrentTotals.expense > 0 && (
                 <p className="text-xs text-[var(--text-muted)] font-bold mb-6">
-                  Tổng tháng: {totals.expense.toLocaleString("vi-VN")}đ
+                  Tổng tháng: {visibleCurrentTotals.expense.toLocaleString("vi-VN")}đ
                 </p>
               )}
 
-              {Object.keys(categoryExpenses).length === 0 ? (
+              {Object.keys(visibleCategoryExpenses).length === 0 ? (
                 <p className="text-sm font-bold text-[var(--text-muted)] text-center py-10">
                   Chưa có dữ liệu chi tiêu
                 </p>
@@ -653,11 +1386,11 @@ export function Dashboard() {
                 <>
                   {/* Column Chart */}
                   <div className="flex items-end justify-around gap-2 h-44 mb-3 px-1">
-                    {Object.entries(categoryExpenses)
-                      .sort(([, a], [, b]) => b - a)
-                      .map(([cat, amt], idx) => {
-                        const pct =
-                          totals.expense > 0 ? (amt / totals.expense) * 100 : 0;
+                    {Object.entries(visibleCategoryExpenses)
+                        .sort(([, a], [, b]) => b - a)
+                        .map(([cat, amt], idx) => {
+                          const pct =
+                          visibleCurrentTotals.expense > 0 ? (amt / visibleCurrentTotals.expense) * 100 : 0;
                         const pctDisplay =
                           pct === 0 ? "0%" : `${parseFloat(pct.toFixed(1))}%`;
                         const solidColors = [
@@ -728,11 +1461,11 @@ export function Dashboard() {
 
                   {/* X-axis labels */}
                   <div className="flex justify-around gap-2 px-1 border-t border-[var(--border-color)] pt-3">
-                    {Object.entries(categoryExpenses)
-                      .sort(([, a], [, b]) => b - a)
-                      .map(([cat, amt], idx) => {
-                        const pct =
-                          totals.expense > 0 ? (amt / totals.expense) * 100 : 0;
+                    {Object.entries(visibleCategoryExpenses)
+                        .sort(([, a], [, b]) => b - a)
+                        .map(([cat, amt], idx) => {
+                          const pct =
+                          visibleCurrentTotals.expense > 0 ? (amt / visibleCurrentTotals.expense) * 100 : 0;
                         const pctDisplay =
                           pct === 0 ? "0%" : `${parseFloat(pct.toFixed(1))}%`;
                         const solidColors = [
@@ -771,25 +1504,52 @@ export function Dashboard() {
         </div>
       )}
 
+      {(historyStack.length > 0 || redoStack.length > 0) && (
+        <div className="fixed bottom-4 left-4 z-[120] flex flex-wrap items-center gap-2 rounded-2xl border border-[var(--border-color)] bg-[var(--bg-card)] px-3 py-2 shadow-2xl backdrop-blur-xl">
+          <span className="text-[10px] font-black uppercase tracking-widest text-[var(--text-muted)]">
+            Lịch sử thao tác
+          </span>
+          <button
+            type="button"
+            onClick={() => void undoLastAction()}
+            disabled={historyStack.length === 0}
+            className="rounded-xl bg-blue-600 px-3 py-2 text-[10px] font-black uppercase tracking-widest text-white disabled:opacity-40"
+          >
+            Undo
+          </button>
+          <button
+            type="button"
+            onClick={() => void redoLastAction()}
+            disabled={redoStack.length === 0}
+            className="rounded-xl border border-[var(--border-color)] px-3 py-2 text-[10px] font-black uppercase tracking-widest disabled:opacity-40"
+          >
+            Redo
+          </button>
+        </div>
+      )}
+
       <AddTransactionModal
         isOpen={isModalOpen}
         onClose={() => {
           setIsModalOpen(false);
           setEditingTransaction(null);
+          setCopyTransaction(null);
         }}
-        initialData={editingTransaction}
+        initialData={editingTransaction || copyTransaction}
         isEditing={!!editingTransaction}
         monthYear={monthYear}
         spreadsheetId={spreadsheetId}
+        transactions={visibleTransactions}
+        onSaved={handleTransactionSaved}
       />
     </div>
   );
 
   function handleExportCSV() {
-    const headers = ["Ngày", "Loại", "Danh mục", "Số tiền", "Mục đích", "Ghi chú"];
+    const headers = ["Ngày", "Loại", "Danh mục", "Số tiền", "Mục đích", "Ghi chú", "Dữ liệu mẫu"];
     const csvContent = [
       headers.join(","),
-      ...transactions.map((tx) =>
+      ...visibleTransactions.map((tx) =>
         [
           tx.date,
           tx.type === "income" ? "Thu nhập" : "Chi tiêu",
@@ -797,7 +1557,8 @@ export function Dashboard() {
           tx.amount,
           tx.purpose,
           tx.note || "",
-        ].join(","),
+          tx.isSample ? "Có" : "",
+        ].join(","), 
       ),
     ].join("\n");
     const blob = new Blob(["\uFEFF" + csvContent], {
@@ -849,10 +1610,11 @@ export function Dashboard() {
               <th>Số tiền</th>
               <th>Mục đích</th>
               <th>Ghi chú</th>
+              <th>Dữ liệu mẫu</th>
             </tr>
           </thead>
           <tbody>
-            ${transactions
+            ${visibleTransactions
               .map(
                 (tx) => `
               <tr>
@@ -862,6 +1624,7 @@ export function Dashboard() {
                 <td>${tx.amount.toLocaleString("vi-VN")}đ</td>
                 <td>${tx.purpose}</td>
                 <td>${tx.note || ""}</td>
+                <td>${tx.isSample ? "Có" : ""}</td>
               </tr>
             `,
               )

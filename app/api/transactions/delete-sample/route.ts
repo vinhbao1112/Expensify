@@ -1,7 +1,7 @@
-import { NextResponse } from "next/server"
 import { getServerSession } from "next-auth/next"
-import { GoogleSheetsService } from "@/lib/google-sheets"
+import { NextResponse } from "next/server"
 import { authOptions } from "@/lib/auth"
+import { GoogleSheetsService } from "@/lib/google-sheets"
 import { requireAccess } from "@/lib/access-control"
 
 export async function POST(request: Request) {
@@ -10,11 +10,12 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
   }
 
-  const { spreadsheetId, monthYear } = await request.json()
-  if (!spreadsheetId || !monthYear) {
-    return NextResponse.json({ error: "Missing required fields" }, { status: 400 })
+  const { spreadsheetId } = await request.json()
+  if (!spreadsheetId) {
+    return NextResponse.json({ error: "Missing spreadsheetId" }, { status: 400 })
   }
-  const email = (session as any)?.user?.email
+
+  const email = session?.user?.email
   if (!email) {
     return NextResponse.json({ error: "Missing user email" }, { status: 401 })
   }
@@ -25,13 +26,17 @@ export async function POST(request: Request) {
     if (!role) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 })
     }
-    await service.clearMonthData(spreadsheetId, monthYear)
+
+    await service.deleteSampleTransactions(spreadsheetId)
     return NextResponse.json({ success: true })
   } catch (error: any) {
-    console.error("Error clearing month data:", error)
-    return NextResponse.json({ 
-      error: error.message || "Internal Server Error",
-      details: error.response?.data || null 
-    }, { status: 500 })
+    console.error("Error deleting sample data:", error)
+    return NextResponse.json(
+      {
+        error: error.message || "Internal Server Error",
+        details: error.response?.data || null,
+      },
+      { status: 500 },
+    )
   }
 }
