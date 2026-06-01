@@ -3,9 +3,9 @@ import { OAuth2Client } from "google-auth-library"
 import { Transaction } from "./types"
 
 export class GoogleSheetsService {
-  private auth: OAuth2Client;
-  private sheets: sheets_v4.Sheets;
-  private drive: drive_v3.Drive;
+  private auth: OAuth2Client
+  private sheets: sheets_v4.Sheets
+  private drive: drive_v3.Drive
 
   constructor(accessToken: string) {
     this.auth = new google.auth.OAuth2()
@@ -14,17 +14,58 @@ export class GoogleSheetsService {
     this.drive = google.drive({ version: "v3", auth: this.auth })
   }
 
+  async getSpreadsheet(spreadsheetId: string) {
+    return this.sheets.spreadsheets.get({ spreadsheetId })
+  }
+
+  async batchUpdate(
+    spreadsheetId: string,
+    requestBody: sheets_v4.Schema$BatchUpdateSpreadsheetRequest,
+  ) {
+    return this.sheets.spreadsheets.batchUpdate({ spreadsheetId, requestBody })
+  }
+
+  async valuesGet(spreadsheetId: string, range: string) {
+    return this.sheets.spreadsheets.values.get({ spreadsheetId, range })
+  }
+
+  async valuesUpdate(
+    spreadsheetId: string,
+    range: string,
+    values: unknown[][],
+    valueInputOption: "RAW" | "USER_ENTERED" = "USER_ENTERED",
+  ) {
+    return this.sheets.spreadsheets.values.update({
+      spreadsheetId,
+      range,
+      valueInputOption,
+      requestBody: { values },
+    })
+  }
+
+  async valuesClear(spreadsheetId: string, range: string) {
+    return this.sheets.spreadsheets.values.clear({
+      spreadsheetId,
+      range,
+      requestBody: {},
+    })
+  }
+
+  private isSampleValue(value: unknown) {
+    const normalized = String(value ?? "").trim().toLowerCase()
+    return normalized === "có" || normalized === "co" || normalized === "true" || normalized === "1"
+  }
+
   /**
    * Find the Expensify spreadsheet or create it
    */
   async getOrCreateSpreadsheet() {
     const fileName = "Expensify Management Data"
-    
-    // 1. Search for existing file
+
     const response = await this.drive.files.list({
       q: `name = '${fileName}' and mimeType = 'application/vnd.google-apps.spreadsheet' and trashed = false`,
       fields: "files(id, name)",
-      pageSize: 1
+      pageSize: 1,
     })
 
     const files = response.data.files
@@ -32,13 +73,12 @@ export class GoogleSheetsService {
       return files[0].id
     }
 
-    // 2. Create new spreadsheet if not found
     const spreadsheet = await this.sheets.spreadsheets.create({
       requestBody: {
         properties: {
-          title: fileName
-        }
-      }
+          title: fileName,
+        },
+      },
     })
 
     return spreadsheet.data.spreadsheetId
@@ -50,7 +90,7 @@ export class GoogleSheetsService {
   async ensureMonthSheet(spreadsheetId: string, monthYear: string) {
     const spreadsheet = await this.sheets.spreadsheets.get({ spreadsheetId })
     const sheetExists = spreadsheet.data.sheets?.some(
-      s => s.properties?.title === monthYear
+      (s) => s.properties?.title === monthYear,
     )
 
     if (!sheetExists) {
@@ -60,37 +100,61 @@ export class GoogleSheetsService {
           requests: [
             {
               addSheet: {
-                properties: { title: monthYear }
-              }
-            }
-          ]
-        }
+                properties: { title: monthYear },
+              },
+            },
+          ],
+        },
       })
 
-      // Add Headers to new sheet
       await this.sheets.spreadsheets.values.update({
         spreadsheetId,
-        range: `${monthYear}!A1:H1`,
+        range: `${monthYear}!A1:L1`,
         valueInputOption: "USER_ENTERED",
         requestBody: {
-          values: [["ID", "Ngày", "Loại", "Danh mục", "Số tiền", "Mục đích", "Ghi chú", "Thời gian tạo"]]
-        }
+          values: [[
+            "ID",
+            "NgÃ y",
+            "Loáº¡i",
+            "Danh má»¥c",
+            "Sá»‘ tiá»n",
+            "Má»¥c Ä‘Ã­ch",
+            "Ghi chÃº",
+            "Thá»i gian táº¡o",
+            "ÄÃ­nh kÃ¨m",
+            "NgÆ°á»i táº¡o",
+            "NgÆ°á»i sá»­a",
+            "Dá»¯ liá»‡u máº«u",
+          ]],
+        },
       })
     }
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  async appendTransaction(spreadsheetId: string, monthYear: string, transaction: Transaction) {
+  async appendTransaction(
+    spreadsheetId: string,
+    monthYear: string,
+    transaction: Transaction,
+  ) {
+    const transactionId = transaction.id || Date.now().toString()
+    const savedTransaction: Transaction = {
+      ...transaction,
+      id: transactionId,
+      createdAt: transaction.createdAt || new Date().toISOString(),
+      rowIndex: 1,
+    }
+
     await this.ensureMonthSheet(spreadsheetId, monthYear)
-    
+
     const spreadsheet = await this.sheets.spreadsheets.get({ spreadsheetId })
-    const sheetId = spreadsheet.data.sheets?.find(s => s.properties?.title === monthYear)?.properties?.sheetId
+    const sheetId = spreadsheet.data.sheets?.find(
+      (s) => s.properties?.title === monthYear,
+    )?.properties?.sheetId
 
     if (sheetId === undefined || sheetId === null) {
       throw new Error(`Sheet for ${monthYear} not found`)
     }
 
-    // Insert an empty row at index 1 (Row 2) to keep newest at top
     await this.sheets.spreadsheets.batchUpdate({
       spreadsheetId,
       requestBody: {
@@ -101,33 +165,39 @@ export class GoogleSheetsService {
                 sheetId,
                 dimension: "ROWS",
                 startIndex: 1,
-                endIndex: 2
+                endIndex: 2,
               },
-              inheritFromBefore: false
-            }
-          }
-        ]
-      }
+              inheritFromBefore: false,
+            },
+          },
+        ],
+      },
     })
 
-    const range = `${monthYear}!A2:H2`
+    const range = `${monthYear}!A2:L2`
     await this.sheets.spreadsheets.values.update({
       spreadsheetId,
       range,
       valueInputOption: "USER_ENTERED",
       requestBody: {
         values: [[
-          Date.now().toString(),
-          transaction.date,
-          transaction.type,
-          transaction.category,
-          transaction.amount,
-          transaction.purpose,
-          transaction.note,
-          new Date().toISOString()
-        ]]
-      }
+          savedTransaction.id,
+          savedTransaction.date,
+          savedTransaction.type,
+          savedTransaction.category,
+          savedTransaction.amount,
+          savedTransaction.purpose,
+          savedTransaction.note,
+          savedTransaction.createdAt,
+          savedTransaction.attachment || "",
+          savedTransaction.createdBy || "",
+          savedTransaction.updatedBy || "",
+          savedTransaction.isSample ? "Có" : "",
+        ]],
+      },
     })
+
+    return savedTransaction
   }
 
   private parseAmount(raw: unknown): number {
@@ -139,27 +209,30 @@ export class GoogleSheetsService {
 
   async getTransactions(spreadsheetId: string, monthYear: string) {
     try {
-      // Ensure the sheet for this month exists before trying to read it
       await this.ensureMonthSheet(spreadsheetId, monthYear)
 
       const response = await this.sheets.spreadsheets.values.get({
         spreadsheetId,
-        range: `'${monthYear}'!A:H`
+        range: `'${monthYear}'!A:L`,
       })
-      
+
       const rows = response.data.values || []
-      if (rows.length <= 1) return [] // Only headers
+      if (rows.length <= 1) return []
 
       return rows.slice(1).map((row, index) => ({
         id: row[0] ?? "",
         date: row[1] ?? "",
         type: row[2] as "income" | "expense",
-        category: row[3] ?? "Khác",
+        category: row[3] ?? "KhÃ¡c",
         amount: this.parseAmount(row[4]),
         purpose: row[5] ?? "",
         note: row[6] ?? "",
         createdAt: row[7] ?? "",
-        rowIndex: index + 1
+        attachment: row[8] ?? "",
+        createdBy: row[9] ?? "",
+        updatedBy: row[10] ?? "",
+        isSample: row[11] === "Có" || row[11] === "true" || row[11] === "1",
+        rowIndex: index + 1,
       })) as Transaction[]
     } catch (error) {
       console.error("Error fetching transactions:", error)
@@ -168,13 +241,12 @@ export class GoogleSheetsService {
   }
 
   async deleteTransaction(spreadsheetId: string, monthYear: string, rowIndex: number) {
-    // Note: rowIndex here is relative to the data (0-based after header)
-    // In Google Sheets, rows are 1-based.
-    // Header is row 1. First data is row 2.
-    const actualRowIndex = rowIndex + 1 
+    const actualRowIndex = rowIndex + 1
 
     const spreadsheet = await this.sheets.spreadsheets.get({ spreadsheetId })
-    const sheetId = spreadsheet.data.sheets?.find(s => s.properties?.title === monthYear)?.properties?.sheetId
+    const sheetId = spreadsheet.data.sheets?.find(
+      (s) => s.properties?.title === monthYear,
+    )?.properties?.sheetId
 
     if (sheetId === undefined || sheetId === null) {
       throw new Error(`Sheet for ${monthYear} not found`)
@@ -190,57 +262,122 @@ export class GoogleSheetsService {
                 sheetId,
                 dimension: "ROWS",
                 startIndex: actualRowIndex,
-                endIndex: actualRowIndex + 1
-              }
-            }
-          }
-        ]
-      }
+                endIndex: actualRowIndex + 1,
+              },
+            },
+          },
+        ],
+      },
     })
   }
 
-  async updateTransaction(spreadsheetId: string, monthYear: string, rowIndex: number, transaction: Transaction) {
+  async deleteSampleTransactions(spreadsheetId: string) {
+    const spreadsheet = await this.sheets.spreadsheets.get({ spreadsheetId })
+    const sheets = spreadsheet.data.sheets || []
+
+    for (const sheet of sheets) {
+      const title = sheet.properties?.title
+      const sheetId = sheet.properties?.sheetId
+      if (!title || sheetId === undefined || sheetId === null) continue
+
+      const response = await this.sheets.spreadsheets.values.get({
+        spreadsheetId,
+        range: `'${title}'!A:L`,
+      })
+
+      const rows = response.data.values || []
+      if (rows.length <= 1) continue
+
+      const sampleRowIndexes = rows
+        .slice(1)
+        .map((row, index) => ({ row, index }))
+        .filter(({ row }) => this.isSampleValue(row[11]))
+        .map(({ index }) => index)
+        .sort((left, right) => right - left)
+
+      for (const dataRowIndex of sampleRowIndexes) {
+        const actualRowIndex = dataRowIndex + 1
+        await this.sheets.spreadsheets.batchUpdate({
+          spreadsheetId,
+          requestBody: {
+            requests: [
+              {
+                deleteDimension: {
+                  range: {
+                    sheetId,
+                    dimension: "ROWS",
+                    startIndex: actualRowIndex,
+                    endIndex: actualRowIndex + 1,
+                  },
+                },
+              },
+            ],
+          },
+        })
+      }
+    }
+  }
+
+  async updateTransaction(
+    spreadsheetId: string,
+    monthYear: string,
+    rowIndex: number,
+    transaction: Transaction,
+  ) {
     const actualRowIndex = rowIndex + 1
-    const range = `'${monthYear}'!A${actualRowIndex}:G${actualRowIndex}` 
-    
+    const range = `'${monthYear}'!A${actualRowIndex}:K${actualRowIndex}`
+    const savedTransaction: Transaction = {
+      ...transaction,
+      createdAt: transaction.createdAt || new Date().toISOString(),
+      rowIndex,
+    }
+
     await this.sheets.spreadsheets.values.update({
       spreadsheetId,
       range,
       valueInputOption: "USER_ENTERED",
       requestBody: {
         values: [[
-          transaction.id,
-          transaction.date,
-          transaction.type,
-          transaction.category,
-          transaction.amount,
-          transaction.purpose,
-          transaction.note
-        ]]
-      }
+          savedTransaction.id,
+          savedTransaction.date,
+          savedTransaction.type,
+          savedTransaction.category,
+          savedTransaction.amount,
+          savedTransaction.purpose,
+          savedTransaction.note,
+          savedTransaction.createdAt,
+          savedTransaction.attachment || "",
+          savedTransaction.createdBy || "",
+          savedTransaction.updatedBy || "",
+          savedTransaction.isSample ? "Có" : "",
+        ]],
+      },
     })
+
+    return savedTransaction
   }
 
   async getAllTimeTotals(spreadsheetId: string) {
     try {
       const spreadsheet = await this.sheets.spreadsheets.get({ spreadsheetId })
-      const sheetTitles = spreadsheet.data.sheets?.map(s => s.properties?.title).filter(Boolean) as string[] || []
-      
+      const sheetTitles =
+        (spreadsheet.data.sheets?.map((s) => s.properties?.title).filter(Boolean) as string[]) ||
+        []
+
       let totalIncome = 0
       let totalExpense = 0
 
-      // We can fetch multiple ranges at once using batchGet
       const response = await this.sheets.spreadsheets.values.batchGet({
         spreadsheetId,
-        ranges: sheetTitles.map(title => `'${title}'!A:E`) 
+        ranges: sheetTitles.map((title) => `'${title}'!A:E`),
       })
 
       const valueRanges = response.data.valueRanges || []
       valueRanges.forEach((range) => {
         const rows = range.values || []
-        if (rows.length <= 1) return // Only headers or empty
+        if (rows.length <= 1) return
 
-        rows.slice(1).forEach(row => {
+        rows.slice(1).forEach((row) => {
           const type = row[2]
           const amount = this.parseAmount(row[4])
           if (type === "income") totalIncome += amount
@@ -255,6 +392,53 @@ export class GoogleSheetsService {
     }
   }
 
+  async getAllTransactions(spreadsheetId: string) {
+    try {
+      const spreadsheet = await this.sheets.spreadsheets.get({ spreadsheetId })
+      const sheetTitles =
+        (spreadsheet.data.sheets?.map((s) => s.properties?.title).filter(Boolean) as string[]) ||
+        []
+
+      if (sheetTitles.length === 0) return []
+
+      const response = await this.sheets.spreadsheets.values.batchGet({
+        spreadsheetId,
+        ranges: sheetTitles.map((title) => `'${title}'!A:L`),
+      })
+
+      const valueRanges = response.data.valueRanges || []
+      const allTransactions: Transaction[] = []
+
+      valueRanges.forEach((range) => {
+        const rows = range.values || []
+        if (rows.length <= 1) return
+
+        rows.slice(1).forEach((row, rowIndex) => {
+          allTransactions.push({
+            id: row[0] ?? "",
+            date: row[1] ?? "",
+            type: row[2] as "income" | "expense",
+            category: row[3] ?? "Khác",
+            amount: this.parseAmount(row[4]),
+            purpose: row[5] ?? "",
+            note: row[6] ?? "",
+            createdAt: row[7] ?? "",
+            attachment: row[8] ?? "",
+            createdBy: row[9] ?? "",
+            updatedBy: row[10] ?? "",
+            isSample: row[11] === "Có" || row[11] === "true" || row[11] === "1",
+            rowIndex: rowIndex + 1,
+          })
+        })
+      })
+
+      return allTransactions
+    } catch (error) {
+      console.error("Error fetching all transactions:", error)
+      return []
+    }
+  }
+
   async clearMonthData(spreadsheetId: string, monthYear: string) {
     await this.sheets.spreadsheets.values.clear({
       spreadsheetId,
@@ -265,7 +449,9 @@ export class GoogleSheetsService {
 
   async clearAllData(spreadsheetId: string) {
     const spreadsheet = await this.sheets.spreadsheets.get({ spreadsheetId })
-    const sheetTitles = spreadsheet.data.sheets?.map(s => s.properties?.title).filter(Boolean) as string[] || []
+    const sheetTitles =
+      (spreadsheet.data.sheets?.map((s) => s.properties?.title).filter(Boolean) as string[]) ||
+      []
 
     for (const title of sheetTitles) {
       await this.sheets.spreadsheets.values.clear({

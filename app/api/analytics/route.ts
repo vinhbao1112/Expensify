@@ -23,16 +23,16 @@ export async function GET(req: Request) {
   }
 
   const service = new GoogleSheetsService(session.accessToken)
-  
+
   try {
     const role = await requireAccess(spreadsheetId, service, email, "viewer")
     if (!role) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 })
     }
-    const totals = await service.getAllTimeTotals(spreadsheetId)
-    return NextResponse.json(totals)
+    const transactions = await service.getAllTransactions(spreadsheetId)
+    return NextResponse.json({ transactions })
   } catch (error: any) {
-    console.error("GOOGLE API TOTALS ERROR:", error.response?.data || error)
+    console.error("GOOGLE API ANALYTICS ERROR:", error.response?.data || error)
     const errorMessage = error instanceof Error ? error.message : "Unknown error"
     return NextResponse.json({ error: errorMessage }, { status: 500 })
   }
