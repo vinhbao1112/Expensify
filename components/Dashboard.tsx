@@ -117,6 +117,8 @@ export function Dashboard() {
   const [showSampleData, setShowSampleData] = useState(true);
   const [accessRole, setAccessRole] = useState<"viewer" | "editor" | "admin" | null>(null);
   const spreadsheetIdRef = useRef(spreadsheetId);
+  const refreshKeyRef = useRef("");
+  const refreshPromiseRef = useRef<Promise<void> | null>(null);
   const recurringProcessedDateRef = useRef<string>("");
 
   useEffect(() => {
@@ -288,6 +290,33 @@ export function Dashboard() {
     [status],
   );
 
+  const refreshCurrentData = useCallback(async () => {
+    const currentSpreadsheetId = spreadsheetIdRef.current
+    if (!currentSpreadsheetId) return
+    const currentKey = `${currentSpreadsheetId}:${monthYear}`
+
+    if (refreshPromiseRef.current && refreshKeyRef.current === currentKey) {
+      return refreshPromiseRef.current
+    }
+
+    const nextRefresh = (async () => {
+      await loadData(currentSpreadsheetId)
+      await loadAnalytics(currentSpreadsheetId)
+    })()
+
+    refreshKeyRef.current = currentKey
+    refreshPromiseRef.current = nextRefresh
+
+    try {
+      await nextRefresh
+    } finally {
+      if (refreshPromiseRef.current === nextRefresh) {
+        refreshPromiseRef.current = null
+        refreshKeyRef.current = ""
+      }
+    }
+  }, [loadAnalytics, loadData, monthYear])
+
   // Initialize spreadsheetId from localStorage once session is ready
   useEffect(() => {
     if (status === "authenticated" && session?.user?.email && !spreadsheetId) {
@@ -296,8 +325,6 @@ export function Dashboard() {
       );
       if (saved) {
         setSpreadsheetId(saved);
-        loadData(saved); // Load immediately with the saved ID
-        loadAnalytics(saved);
       } else {
         loadData(); // No saved ID, discover one
       }
@@ -306,46 +333,33 @@ export function Dashboard() {
   }, [status, session]);
 
   useEffect(() => {
-    // Only load if we have a spreadsheetId (to avoid double discovery)
-    if (spreadsheetId) {
-      loadData(spreadsheetId);
-      loadAnalytics(spreadsheetId);
-    }
+    if (status !== "authenticated" || !spreadsheetId) return
 
     const handleRefresh = () => {
-      loadData(spreadsheetIdRef.current);
-      loadAnalytics(spreadsheetIdRef.current);
+      void refreshCurrentData()
     };
-    window.addEventListener("transaction-added", handleRefresh);
-    return () => window.removeEventListener("transaction-added", handleRefresh);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loadData, loadAnalytics, spreadsheetId]);
 
-  useEffect(() => {
-    if (status !== "authenticated" || !spreadsheetId) return
+    let cancelled = false
     setTransactions([])
     setAnalyticsTransactions([])
-    let cancelled = false
+
     const run = async () => {
       setIsLoadingMonthData(true)
       try {
-        await Promise.all([loadData(spreadsheetId), loadAnalytics(spreadsheetId)])
+        await refreshCurrentData()
       } finally {
         if (!cancelled) setIsLoadingMonthData(false)
       }
     }
+
     void run()
+    window.addEventListener("transaction-added", handleRefresh);
     return () => {
       cancelled = true
+      window.removeEventListener("transaction-added", handleRefresh)
     }
-  }, [monthYear, loadAnalytics, loadData, spreadsheetId, status])
-
-  const refreshCurrentData = useCallback(async () => {
-    const currentSpreadsheetId = spreadsheetIdRef.current
-    if (!currentSpreadsheetId) return
-    await loadData(currentSpreadsheetId)
-    await loadAnalytics(currentSpreadsheetId)
-  }, [loadAnalytics, loadData])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [monthYear, refreshCurrentData, spreadsheetId, status])
 
   const pushHistoryAction = useCallback((action: HistoryAction) => {
     setHistoryStack((current) => [action, ...current].slice(0, 10))
@@ -647,15 +661,14 @@ export function Dashboard() {
 
       if (changed) {
         saveRecurringTemplates(spreadsheetId, nextTemplates)
-        await loadData(spreadsheetId)
-        await loadAnalytics(spreadsheetId)
+        await refreshCurrentData()
       }
 
       recurringProcessedDateRef.current = todayStr
     }
 
     void run()
-  }, [todayStr, spreadsheetId, loadData, loadAnalytics]);
+  }, [todayStr, spreadsheetId, refreshCurrentData]);
 
   useEffect(() => {
     if (!spreadsheetId || status !== "authenticated") return
@@ -697,7 +710,7 @@ export function Dashboard() {
 
       if (res.ok) {
         alert("Đã xóa dữ liệu tháng thành công!");
-        loadData(spreadsheetId);
+        await refreshCurrentData();
       } else {
         const errorData = await res.json();
         alert(`Có lỗi xảy ra khi xóa dữ liệu: ${errorData.error || "Lỗi không xác định"}`);
@@ -721,7 +734,7 @@ export function Dashboard() {
 
       if (res.ok) {
         alert("Đã xóa toàn bộ dữ liệu thành công!");
-        loadData(spreadsheetId);
+        await refreshCurrentData();
       } else {
         const errorData = await res.json();
         alert(`Có lỗi xảy ra khi xóa dữ liệu: ${errorData.error || "Lỗi không xác định"}`);

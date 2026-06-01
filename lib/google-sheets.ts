@@ -6,6 +6,7 @@ export class GoogleSheetsService {
   private auth: OAuth2Client
   private sheets: sheets_v4.Sheets
   private drive: drive_v3.Drive
+  private spreadsheetCache = new Map<string, Promise<any>>()
 
   constructor(accessToken: string) {
     this.auth = new google.auth.OAuth2()
@@ -15,14 +16,21 @@ export class GoogleSheetsService {
   }
 
   async getSpreadsheet(spreadsheetId: string) {
-    return this.sheets.spreadsheets.get({ spreadsheetId })
+    const cached = this.spreadsheetCache.get(spreadsheetId)
+    if (cached) return cached
+
+    const request = this.sheets.spreadsheets.get({ spreadsheetId })
+    this.spreadsheetCache.set(spreadsheetId, request)
+    return request
   }
 
   async batchUpdate(
     spreadsheetId: string,
     requestBody: sheets_v4.Schema$BatchUpdateSpreadsheetRequest,
   ) {
-    return this.sheets.spreadsheets.batchUpdate({ spreadsheetId, requestBody })
+    const response = await this.sheets.spreadsheets.batchUpdate({ spreadsheetId, requestBody })
+    this.spreadsheetCache.delete(spreadsheetId)
+    return response
   }
 
   async valuesGet(spreadsheetId: string, range: string) {
